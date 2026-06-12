@@ -237,6 +237,20 @@ body {
   border: 1px solid var(--border);
 }
 .btn-export { background: #2E6B3E; color: #fff; }
+.btn-resumo {
+  background: #111;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border: none;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.btn-resumo:hover { opacity: .82; }
 
 /* ── KPI Cards ──────────────────────────────────────────────────── */
 .kpi-grid {
@@ -552,6 +566,42 @@ tfoot td.num { text-align: right; }
     <button class="btn btn-ghost" onclick="clearFilters()">Limpar</button>
     <div class="toolbar-sep"></div>
     <input type="text" class="search-input" id="search-atrasos" placeholder="Buscar nos atrasos..." style="display:none;">
+    <button class="btn btn-resumo" onclick="gerarResumo()" id="btn-resumo" style="margin-left:auto;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="vertical-align:-2px;margin-right:6px;"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      Gerar Resumo IA
+    </button>
+  </div>
+
+  <!-- Modal Resumo IA -->
+  <div id="modal-resumo" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.5);align-items:center;justify-content:center;padding:24px;">
+    <div style="background:#fff;border-radius:12px;max-width:680px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.25);">
+      <!-- Modal header -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:20px 24px 16px;border-bottom:1px solid #E8E8E8;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:32px;height:32px;background:#111;border-radius:8px;display:flex;align-items:center;justify-content:center;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          </div>
+          <div>
+            <div style="font-weight:700;font-size:14px;color:#111;">Resumo Executivo IA</div>
+            <div style="font-size:11px;color:#888;" id="resumo-subtitle">Análise gerada automaticamente</div>
+          </div>
+        </div>
+        <button onclick="fecharResumo()" style="background:none;border:none;font-size:20px;color:#888;cursor:pointer;line-height:1;padding:4px;">✕</button>
+      </div>
+      <!-- Modal body -->
+      <div style="padding:24px;overflow-y:auto;flex:1;" id="resumo-body">
+        <div id="resumo-loading" style="text-align:center;padding:40px 0;display:none;">
+          <div class="spinner" style="border-color:#ddd;border-top-color:#111;margin:0 auto 16px;"></div>
+          <div style="color:#888;font-size:13px;">Analisando os dados...</div>
+        </div>
+        <div id="resumo-texto" style="font-size:14px;line-height:1.75;color:#222;white-space:pre-wrap;"></div>
+      </div>
+      <!-- Modal footer -->
+      <div style="padding:14px 24px;border-top:1px solid #E8E8E8;display:flex;justify-content:flex-end;gap:8px;">
+        <button class="btn btn-ghost" onclick="copiarResumo()">Copiar texto</button>
+        <button class="btn btn-primary" onclick="fecharResumo()">Fechar</button>
+      </div>
+    </div>
   </div>
 
   <!-- KPI Cards -->
@@ -757,10 +807,10 @@ function calcDeadline(dt) {
   const hora = d.getHours() + d.getMinutes() / 60;
 
   let dias;
-  if (dow === 5 && hora > 13) {
-    dias = 3;                          // Sexta após 13h → Segunda (+3)
-  } else if (hora <= 13) {
-    dias = 0;                          // Qualquer dia até 13h → mesmo dia
+  if (dow === 5 && hora > 14) {
+    dias = 3;                          // Sexta após 14h → Segunda (+3)
+  } else if (hora <= 14) {
+    dias = 0;                          // Qualquer dia até 14h → mesmo dia
   } else {
     dias = 1;                          // Qualquer dia após 13h → dia seguinte
     // Se o dia seguinte cair no fim de semana, empurra para segunda
@@ -1402,6 +1452,165 @@ function renderMotivos() {
     c.style.color = '#fff';
     c.style.fontWeight = '700';
     c.style.borderTop = '2px solid #111';
+  });
+}
+
+// ── Resumo IA ─────────────────────────────────────────────────────────────────
+async function gerarResumo() {
+  if (!filteredData.length) return;
+
+  const total     = filteredData.length;
+  const prazo     = filteredData.filter(r => r.sla === 'No prazo').length;
+  const atrasado  = filteredData.filter(r => r.sla === 'Atrasado').length;
+  const andamento = filteredData.filter(r => r.sla === 'Em andamento').length;
+  const valores   = filteredData.map(r => r.valor).filter(v => v != null);
+  const totalVal  = valores.reduce((a,b) => a+b, 0);
+  const ticket    = valores.length ? totalVal / valores.length : 0;
+  const pctAtr    = total > 0 ? (atrasado/total*100).toFixed(1) : '0.0';
+  const pctPrazo  = total > 0 ? (prazo/total*100).toFixed(1) : '0.0';
+
+  const from   = document.getElementById('filter-from').value;
+  const to     = document.getElementById('filter-to').value;
+  const periodo = (from && to) ? `${fmtDate(from)} a ${fmtDate(to)}` : 'todo o período disponível';
+
+  // ── Por depositante
+  const byDep = {};
+  filteredData.forEach(r => {
+    if (!byDep[r.depositante]) byDep[r.depositante] = { total:0, atr:0, val:[], transp:{} };
+    byDep[r.depositante].total++;
+    if (r.sla === 'Atrasado') {
+      byDep[r.depositante].atr++;
+      const t = r.transportadora || 'Não informada';
+      byDep[r.depositante].transp[t] = (byDep[r.depositante].transp[t]||0)+1;
+    }
+    if (r.valor) byDep[r.depositante].val.push(r.valor);
+  });
+  const depLines = Object.entries(byDep)
+    .sort((a,b) => b[1].total - a[1].total)
+    .map(([dep, d]) => {
+      const med = d.val.length ? d.val.reduce((a,b)=>a+b,0)/d.val.length : 0;
+      const transpTop = Object.entries(d.transp).sort((a,b)=>b[1]-a[1])[0];
+      return `  • ${dep}: ${d.total} pedidos | ${d.atr} atrasados (${(d.atr/d.total*100).toFixed(1)}%) | ticket médio R$ ${med.toFixed(2)}${transpTop ? ` | transp. c/ mais atrasos: ${transpTop[0]} (${transpTop[1]})` : ''}`;
+    }).join('\n');
+
+  // ── Transportadoras
+  const byTransp = {};
+  filteredData.filter(r => r.sla==='Atrasado').forEach(r => {
+    const t = r.transportadora || 'Não informada';
+    byTransp[t] = (byTransp[t]||0)+1;
+  });
+  const transpLines = Object.entries(byTransp).sort((a,b)=>b[1]-a[1])
+    .map(([t,n]) => `  • ${t}: ${n} atrasos`).join('\n') || '  Nenhuma informação disponível.';
+
+  // ── Atraso médio
+  const now = new Date();
+  const diasAtraso = filteredData.filter(r => r.sla==='Atrasado').map(r => {
+    if (r.dt_xml && r.sla_deadline) return Math.max(0, Math.round((r.dt_xml - r.sla_deadline)/864e5));
+    if (r.sla_deadline) return Math.max(0, Math.round((now - r.sla_deadline)/864e5));
+    return 0;
+  });
+  const mediaAtraso = diasAtraso.length ? (diasAtraso.reduce((a,b)=>a+b,0)/diasAtraso.length).toFixed(1) : '0';
+
+  // ── Dias da semana
+  const byDow = {0:0,1:0,2:0,3:0,4:0,5:0,6:0};
+  const dowNames = ['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'];
+  filteredData.filter(r => r.sla==='Atrasado' && r.dt_geracao).forEach(r => byDow[r.dt_geracao.getDay()]++);
+  const dowLines = Object.entries(byDow).filter(([,n])=>n>0)
+    .sort((a,b)=>b[1]-a[1])
+    .map(([d,n]) => `  • ${dowNames[d]}: ${n} atrasos`).join('\n') || '  Sem dados.';
+
+  // ── Motivos
+  const comMotivo = filteredData.filter(r => r.sla==='Atrasado' && (motivoMap[r.os]||'').trim());
+  const mc = {};
+  comMotivo.forEach(r => { const m = motivoMap[r.os].trim(); mc[m]=(mc[m]||0)+1; });
+  const motivoLines = Object.entries(mc).sort((a,b)=>b[1]-a[1])
+    .map(([m,n]) => `  • "${m}": ${n} ocorrências (${(n/atrasado*100).toFixed(1)}% dos atrasos)`)
+    .join('\n') || '  Nenhum motivo registrado ainda.';
+  const semMotivo = atrasado - comMotivo.length;
+
+  // ── Prompt
+  const prompt = `Você é um analista sênior de operações logísticas, especialista em WMS, SLA de expedição e melhoria de processos. Com base EXCLUSIVAMENTE nos dados abaixo, produza um resumo executivo em português claro e profissional.
+
+REGRAS DE FORMATO:
+- Sem markdown, sem asteriscos, sem hashtags, sem bullet points com hífen
+- Use blocos de texto separados por linha em branco
+- Cada seção começa com o título em maiúsculas seguido de dois-pontos na mesma linha
+- Seja direto, use os números reais, não invente dados
+
+PERÍODO ANALISADO: ${periodo}
+
+VISÃO GERAL:
+  Total de pedidos: ${total.toLocaleString('pt-BR')}
+  No prazo (SLA OK): ${prazo.toLocaleString('pt-BR')} (${pctPrazo}%)
+  Atrasados: ${atrasado.toLocaleString('pt-BR')} (${pctAtr}%)
+  Em andamento: ${andamento.toLocaleString('pt-BR')}
+  Valor total NF: R$ ${totalVal.toLocaleString('pt-BR',{minimumFractionDigits:2})}
+  Ticket médio geral: R$ ${ticket.toLocaleString('pt-BR',{minimumFractionDigits:2})}
+  Atraso médio por pedido: ${mediaAtraso} dia(s)
+
+POR DEPOSITANTE:
+${depLines}
+
+ATRASOS POR TRANSPORTADORA:
+${transpLines}
+
+ATRASOS POR DIA DA SEMANA:
+${dowLines}
+
+MOTIVOS DE ATRASO REGISTRADOS (${comMotivo.length} de ${atrasado} atrasos com motivo; ${semMotivo} sem motivo ainda):
+${motivoLines}
+
+ESTRUTURA OBRIGATÓRIA DO RESUMO (4 seções, nessa ordem):
+
+SITUAÇÃO GERAL DO PERÍODO: [2-3 frases cobrindo volume, valores e nível de SLA. Classifique como excelente (<5% atraso), aceitável (5-15%), atenção (15-30%) ou crítico (>30%)]
+
+CLIENTES COM MAIOR IMPACTO: [Cite os depositantes com mais atrasos e os com melhor desempenho, usando os números reais]
+
+CAUSAS DOS ATRASOS: [Se houver motivos registrados, analise os principais. Se não houver, infira com base na distribuição por transportadora e dia da semana. Mencione os ${semMotivo > 0 ? semMotivo + ' atrasos ainda sem motivo registrado' : 'dados disponíveis'}]
+
+RECOMENDAÇÕES: [3 a 5 ações concretas e priorizadas, baseadas nos dados reais acima. Numere as ações.]`;
+
+  // ── Exibir modal
+  document.getElementById('modal-resumo').style.display = 'flex';
+  document.getElementById('resumo-loading').style.display = 'block';
+  document.getElementById('resumo-texto').textContent = '';
+  document.getElementById('resumo-subtitle').textContent = `Período: ${periodo} — gerando análise...`;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1200,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    const texto = data.content?.[0]?.text || 'Não foi possível gerar o resumo.';
+    document.getElementById('resumo-loading').style.display = 'none';
+    document.getElementById('resumo-subtitle').textContent = `Período: ${periodo}`;
+    document.getElementById('resumo-texto').textContent = texto;
+  } catch(e) {
+    document.getElementById('resumo-loading').style.display = 'none';
+    document.getElementById('resumo-subtitle').textContent = `Período: ${periodo}`;
+    document.getElementById('resumo-texto').textContent = `Não foi possível conectar à IA.\n\nVerifique se a ferramenta está sendo aberta via servidor (não diretamente como arquivo local), ou use a versão offline do resumo.\n\nErro: ${e.message}`;
+  }
+}
+
+function fecharResumo() {
+  document.getElementById('modal-resumo').style.display = 'none';
+}
+
+function copiarResumo() {
+  const texto = document.getElementById('resumo-texto').textContent;
+  if (!texto) return;
+  navigator.clipboard.writeText(texto).then(() => {
+    const btn = event.target;
+    btn.textContent = '✓ Copiado!';
+    setTimeout(() => { btn.textContent = 'Copiar texto'; }, 2000);
   });
 }
 
